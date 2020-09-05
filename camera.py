@@ -8,6 +8,8 @@
 import cv2
 import numpy as np
 from time import time
+import argparse
+
 
 class StableFaceCapture:
 
@@ -28,7 +30,7 @@ class StableFaceCapture:
 		3. We assume that only one face will be detected in the frame.
 	'''
 
-	def __init__(self, video=0, threshold=0.025, camHeight=480, camWidth=640, rescale=8, noDetectionLimit=0, foreheadSize=(15, 10), foreheadScale=0.07, cvArgs={'scaleFactor':1.1, 'minNeighbors':5, 'minSize':(30, 30),'flags':cv2.CASCADE_SCALE_IMAGE}):
+	def __init__(self, video=0, threshold=0.025, camHeight=480, camWidth=640, rescale=8, noDetectionLimit=0, cvArgs={'scaleFactor':1.1, 'minNeighbors':5, 'minSize':(30, 30),'flags':cv2.CASCADE_SCALE_IMAGE}):
 
 		'''
 			- threshold: 		this will ensure that if the captured face is within
@@ -43,8 +45,6 @@ class StableFaceCapture:
 
 		# Inherit parameters
 		self.threshold = threshold
-		self.foreheadSize = foreheadSize
-		self.foreheadScale = foreheadScale
 		self.cvArgs = cvArgs
 
 		# Initialize camera and cascade classifier
@@ -172,6 +172,10 @@ class StableFaceCapture:
 # DEMO
 if __name__=='__main__':
 
+
+	mode = 'remove' # 'remove', 'blur', None
+
+
 	wid, hei = (640,480)
 	scale = 8
 	sW, sH = (int(wid/scale), int(hei/scale))
@@ -205,7 +209,7 @@ if __name__=='__main__':
 
 		if loc is not None:
 
-			# Grab the forehead and keypoints
+			# Grab the head location
 			(x, y, w, h) = loc
 
 			# Draw the keypoints
@@ -232,13 +236,25 @@ if __name__=='__main__':
 
 			if(grabbed):
 
-				# Uncomment these to use blurred background
-				bgimg = cv2.resize(img, (int(wid/4), int(hei/4)))
-				bgimg = cv2.filter2D(bgimg,-1,bgblur_kernel)
-				bgimg = cv2.resize(bgimg, (wid,hei))
+				if(mode==None):
 
-				# Uncomment this to apply mask
-				img = img*mask2[:,:,np.newaxis] + bgimg*(1-mask2[:,:,np.newaxis])
+					pass
+
+				elif (mode=='blur'):
+
+					bgimg = cv2.resize(img, (int(wid/4), int(hei/4)))
+					bgimg = cv2.filter2D(bgimg,-1,bgblur_kernel)
+					bgimg = cv2.resize(bgimg, (wid,hei))
+
+					img = img*mask2[:,:,np.newaxis] + bgimg*(1-mask2[:,:,np.newaxis])
+
+				elif (mode=='remove'):
+
+					img = img*mask2[:,:,np.newaxis] + bgimg*(1-mask2[:,:,np.newaxis])					
+
+				else:
+
+					raise NotImplementedError('Supported modes = ["blur", "remove", None]')
 
 				pass
 
