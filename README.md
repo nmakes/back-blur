@@ -14,7 +14,7 @@ Run the following command
 
 	python3 camera.py
 
-To use background removal (using a false background), set (Line 176)
+To use background removal (using a false background), set (Line 258)
 
 	mode = 'remove'
 

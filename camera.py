@@ -46,17 +46,16 @@ class StableFaceCapture:
 		# Inherit parameters
 		self.threshold = threshold
 		self.cvArgs = cvArgs
+		self.camWidth = camWidth
+		self.camHeight = camHeight
+		# self.rescale = rescale
 
-		# Initialize camera and cascade classifier
+		# Initialize camera parameters
 		self.cam = cv2.VideoCapture(video)
 		self.cam.set(3,camWidth)
 		self.cam.set(4,camHeight)
-		# self.detector=dlib.get_frontal_face_detector()
-		self.camWidth = int(self.cam.get(cv2.CAP_PROP_FRAME_WIDTH))
-		self.camHeight = int(self.cam.get(cv2.CAP_PROP_FRAME_HEIGHT))
 		self.camDiag = np.sqrt(self.camWidth**2 + self.camHeight**2)
 		self.faceCascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
-		# self.faceCascade = cv2.CascadeClassifier('haarcascade_upperbody.xml')
 
 		# Region of Interest
 		self.ROI = None # np.array([0,0,0,0]) # (x,y,w,h)
@@ -69,18 +68,20 @@ class StableFaceCapture:
 		self.noDetectionCounter = 0
 
 		# Utils for GrabCut
-		self.bgdModel = np.zeros((1,65),np.float64)
-		self.fgdModel = np.zeros((1,65),np.float64)
-		self.mm = np.zeros((int(self.camWidth/rescale),int(self.camHeight/rescale)))
+		# self.bgdModel = np.zeros((1,65),np.float64)
+		# self.fgdModel = np.zeros((1,65),np.float64)
+		# self.mm = np.zeros((int(self.camWidth/self.rescale),int(self.camHeight/self.rescale)))
 
 
 	def getCamDims(self):
 		# For openCV like dimensions
 		return (int(self.camWidth), int(self.camHeight))
 
+
 	def getCamShape(self):
 		# For numpy like shape
 		return (int(self.camHeight), int(self.camWidth))
+
 
 	def withinThreshold(self, loc):
 
@@ -95,10 +96,15 @@ class StableFaceCapture:
 
 		if returnSuccess==False:
 			ret_val, img = self.cam.read()
+			if(img.shape[:2] != (self.camHeight, self.camWidth)):
+				img = cv2.resize(img, (self.camWidth, self.camHeight), cv2.INTER_CUBIC)
 			return img
 		else:
 			ret_val, img = self.cam.read()
+			if(img.shape[:2] != (self.camHeight, self.camWidth)):
+				img = cv2.resize(img, (self.camWidth, self.camHeight), cv2.INTER_CUBIC)
 			return ret_val, img
+
 
 	def getFace(self, img=None):
 
@@ -168,33 +174,106 @@ class StableFaceCapture:
 					return self.F
 
 
+class BackgroundHandler:
+
+
+	def __init__(self, camWidth, camHeight, rescale=8, mode='blur', alt_image_path='back.jpg', blur_kernel_size=9, mask_smooth_kernel_size=11, mask_smooth_iters=2, update_iters=10):
+
+		self.camWidth = camWidth
+		self.camHeight = camHeight
+		self.rescale = rescale
+		self.mode = mode
+		self.alt_image_path = alt_image_path
+		self.alt_image = cv2.imread(alt_image_path)
+		self.alt_image = cv2.resize(self.alt_image, (self.camWidth,self.camHeight), cv2.INTER_CUBIC)
+
+		# Counters for updating only after a few iterations
+		self.update_iters = update_iters
+		self.update_counter = -1
+
+		# GrabCut runs on rescaled dimensions
+		self.sW = int(self.camWidth / self.rescale)
+		self.sH = int(self.camHeight / self.rescale)
+
+		# Smoothing kernels
+		self.blur_kernel_size = b = blur_kernel_size
+		self.mask_smooth_kernel_size = k = mask_smooth_kernel_size
+		self.mask_smooth_iters = mask_smooth_iters
+
+		self.bgblur_kernel = np.ones((b,b), np.float32)/(b**2)
+		self.mask_smooth_kernel = np.ones((k,k), np.float32)/(k**2)
+
+		# Grabcut parameters
+		self.bgdModel = np.zeros((1,65),np.float64)
+		self.fgdModel = np.zeros((1,65),np.float64)
+		self.mm = np.zeros((int(self.camWidth/self.rescale),int(self.camHeight/self.rescale)))
+		self.mask = self.mm
+
+
+	def get_mask(self, img, face_location):
+
+		self.update_counter += 1
+
+		x,y,w,h = face_location
+		X,Y,W,H = [int(a/self.rescale) for a in (x,y,w,h)]
+
+		if (img.shape[:2] != (self.camHeight, self.camWidth)):
+			print('WARNING::BackgroundHandler::get_mask(): image shape does not match (camWidth, camHeight)')
+
+		smallimg = cv2.resize(img, (self.sW, self.sH), interpolation=cv2.INTER_LINEAR)
+		rect = (max(1,X-int(W)),max(1,Y-int(H)),min(int(3*W),self.sW),smallimg.shape[0]-(Y-int(H)))
+
+		if (self.update_counter % self.update_iters == 0):
+			self.mm, self.bgdModel, self.fgdModel = cv2.grabCut(smallimg,self.mm,rect,self.bgdModel,self.fgdModel,5,cv2.GC_INIT_WITH_RECT)
+			self.mask = np.where((self.mm==2)|(self.mm==0),0,1).astype('uint8')
+
+			self.mask = cv2.resize(self.mask, (self.camWidth,self.camHeight), interpolation=cv2.INTER_LINEAR)
+
+			for _ in range(self.mask_smooth_iters):
+				self.mask = cv2.filter2D(self.mask,-1,self.mask_smooth_kernel)
+
+			self.mask = self.mask[:, :, np.newaxis]
+		
+		return self.mask
+
+
+	def apply_background(self, img, mask):
+
+		if(self.mode==None):
+			return img
+
+		elif(self.mode=='remove'):
+			return img * self.mask + self.alt_image * (1-self.mask)
+
+		elif(self.mode=='blur'):
+			alt_image = cv2.resize(img, (int(self.camWidth/4), int(self.camHeight/4)))
+			alt_image = cv2.filter2D(alt_image,-1,self.bgblur_kernel)
+			alt_image = cv2.resize(alt_image, (self.camWidth,self.camHeight))
+			return img * self.mask + alt_image * (1-self.mask)
+
 
 # DEMO
 if __name__=='__main__':
 
-
-	mode = 'remove' # 'remove', 'blur', None
-
-
+	mode = 'blur' # 'remove', 'blur', None
 	wid, hei = (640,480)
 	scale = 8
-	sW, sH = (int(wid/scale), int(hei/scale))
+	update_iters = 10
+
+	blur_kernel_size = 9
+	mask_smooth_kernel_size = 15
+	mask_smooth_iters = 5
+
+	bg_path = 'back.jpg'
 
 	cap = StableFaceCapture(threshold=0.1, camHeight=hei, camWidth=wid, rescale=scale)
 
+	backhandle = BackgroundHandler(camWidth=wid, camHeight=hei, rescale=scale, 
+									mode=mode, alt_image_path=bg_path, 
+									blur_kernel_size=blur_kernel_size, mask_smooth_kernel_size=mask_smooth_kernel_size, 
+									mask_smooth_iters=mask_smooth_iters, update_iters=update_iters)
+
 	c = -1
-
-	bgimg = cv2.imread('back.jpg')
-	bgimg = cv2.resize(bgimg, (wid,hei), cv2.INTER_CUBIC)
-
-	mean_kernel_size = 11
-	mean_kernel = np.ones((mean_kernel_size,mean_kernel_size), np.float32)/(mean_kernel_size**2)
-	blur_times = 2
-
-	bgblur_kernel = np.ones((9,9), np.float32)/(9**2)
-
-	grabbed = False
-	mask2 = None
 
 	T = time()
 	timer = 0
@@ -209,73 +288,21 @@ if __name__=='__main__':
 
 		if loc is not None:
 
-			# Grab the head location
-			(x, y, w, h) = loc
+			mask = backhandle.get_mask(img, loc)
+			img = backhandle.apply_background(img, mask)
 
-			# Draw the keypoints
-			# cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 2)
-			
-
-			if(c%10==0):
-				X=int(x/scale)
-				Y=int(y/scale)
-				W=int(w/scale)
-				H=int(h/scale)
-				smallimg = cv2.resize(img, (sW,sH), interpolation=cv2.INTER_LINEAR)
-				rect = (max(1,X-int(W)),max(1,Y-int(H)),min(int(3*W),sW),smallimg.shape[0]-(Y-int(H)))
-
-				initer = cv2.GC_INIT_WITH_RECT
-				cap.mm, cap.bgdModel, cap.fgdModel = cv2.grabCut(smallimg,cap.mm,rect,cap.bgdModel,cap.fgdModel,5,initer)
-				mask2 = np.where((cap.mm==2)|(cap.mm==0),0,1).astype('uint8')
-
-				grabbed = True
-				mask2 = cv2.resize(mask2, (wid,hei), interpolation=cv2.INTER_LINEAR)
-				for _ in range(blur_times):
-					mask2 = cv2.filter2D(mask2,-1,mean_kernel)
-
-
-			if(grabbed):
-
-				if(mode==None):
-
-					pass
-
-				elif (mode=='blur'):
-
-					bgimg = cv2.resize(img, (int(wid/4), int(hei/4)))
-					bgimg = cv2.filter2D(bgimg,-1,bgblur_kernel)
-					bgimg = cv2.resize(bgimg, (wid,hei))
-
-					img = img*mask2[:,:,np.newaxis] + bgimg*(1-mask2[:,:,np.newaxis])
-
-				elif (mode=='remove'):
-
-					img = img*mask2[:,:,np.newaxis] + bgimg*(1-mask2[:,:,np.newaxis])					
-
-				else:
-
-					raise NotImplementedError('Supported modes = ["blur", "remove", None]')
-
-				pass
-
-			# Show the image
 			cv2.imshow('camera', img)
 
 		else:
 			cv2.imshow('camera', img)
-			pass
 
 		if cv2.waitKey(1) == 27:
 			break  # esc to quit
 
 
-
-
 		t = time()
 		timer += t-T
-
 		if(c%timer_steps==0):
 			print("TIME: {} | FPS: {}".format(timer/timer_steps, timer_steps/timer))
 			timer = 0
-
 		T = t
